@@ -1,3 +1,6 @@
+# Streamlit (required for the web app)
+streamlit>=1.28.0
+
 # Core ML and Data Science Libraries
 pandas>=2.0.0
 numpy>=1.24.0
