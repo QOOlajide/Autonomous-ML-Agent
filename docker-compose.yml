@@ -1,0 +1,23 @@
+# Docker Compose configuration for easy deployment
+# This allows you to run your app with a single command: docker-compose up
+
+version: '3.8'
+
+services:
+  ml-agent:
+    build: .
+    ports:
+      - "8501:8501"  # Map host port 8501 to container port 8501
+    volumes:
+      - ./artifacts:/app/artifacts  # Persist model artifacts
+      - ./logs:/app/logs            # Persist logs
+    environment:
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - STREAMLIT_SERVER_HEADLESS=true
+    restart: unless-stopped  # Automatically restart if container crashes
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

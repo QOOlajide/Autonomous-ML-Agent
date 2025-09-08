@@ -1,0 +1,74 @@
+# GitHub Actions workflow for automated deployment
+# This automatically deploys your app when you push to the main branch
+
+name: Deploy ML Agent
+
+# Trigger on push to main branch
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+# Jobs to run
+jobs:
+  # Test the application
+  test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Run tests (if you have them)
+      run: |
+        # Add your test commands here
+        echo "Tests would run here"
+    
+    - name: Lint code
+      run: |
+        pip install flake8
+        flake8 src/ --count --select=E9,F63,F7,F82 --show-source --statistics
+
+  # Deploy to Streamlit Cloud (manual trigger)
+  deploy-streamlit:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Deploy to Streamlit Cloud
+      run: |
+        echo "🚀 Your app will be automatically deployed to Streamlit Cloud!"
+        echo "Check https://share.streamlit.io for deployment status"
+
+  # Build Docker image
+  build-docker:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+    
+    - name: Build Docker image
+      run: |
+        docker build -t ml-agent:latest .
+        echo "✅ Docker image built successfully!"
