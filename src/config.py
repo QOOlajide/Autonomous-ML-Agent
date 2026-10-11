@@ -2,7 +2,7 @@
 Configuration management for the Autonomous ML Agent.
 
 This module handles all configuration settings including:
-- LLM API keys and settings
+- LLM API keys and settings (OpenRouter by default)
 - Model training parameters
 - Compute budget constraints
 - Logging configuration
@@ -18,10 +18,15 @@ load_dotenv()
 
 @dataclass
 class LLMConfig:
-    """Configuration for LLM providers (OpenAI, Anthropic, etc.)"""
+    """Configuration for LLM providers (OpenRouter primary; OpenAI-compatible)."""
+    openrouter_api_key: Optional[str] = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    model_name: str = "google/gemini-3.1-flash-lite"
+    site_url: Optional[str] = None  # Optional OpenRouter ranking header
+    site_name: Optional[str] = None  # Optional OpenRouter ranking header
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
-    default_provider: str = "openai"  # or "anthropic"
+    default_provider: str = "openrouter"
     max_tokens: int = 4000
     temperature: float = 0.1  # Lower temperature for more consistent code generation
 
@@ -69,11 +74,18 @@ class Config:
     """
     
     def __init__(self):
-        # Load LLM configuration
+        # Load LLM configuration (OpenRouter-first)
         self.llm = LLMConfig(
+            openrouter_api_key=os.getenv("OPENROUTER_API_KEY"),
+            openrouter_base_url=os.getenv(
+                "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+            ),
+            model_name=os.getenv("OPENROUTER_MODEL", "google/gemini-3.1-flash-lite"),
+            site_url=os.getenv("OPENROUTER_SITE_URL"),
+            site_name=os.getenv("OPENROUTER_SITE_NAME", "Autonomous ML Agent"),
             openai_api_key=os.getenv("OPENAI_API_KEY"),
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
-            default_provider=os.getenv("DEFAULT_LLM_PROVIDER", "openai"),
+            default_provider=os.getenv("DEFAULT_LLM_PROVIDER", "openrouter"),
             max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4000")),
             temperature=float(os.getenv("LLM_TEMPERATURE", "0.1"))
         )
@@ -108,10 +120,32 @@ class Config:
         Returns:
             bool: True if configuration is valid, False otherwise
         """
-        # Check that at least one LLM API key is provided
-        if not self.llm.openai_api_key and not self.llm.anthropic_api_key:
-            print("ERROR: No LLM API keys found. Please set OPENAI_API_KEY or ANTHROPIC_API_KEY")
-            return False
+        provider = (self.llm.default_provider or "openrouter").lower()
+
+        if provider == "openrouter":
+            if not self.llm.openrouter_api_key:
+                print("ERROR: No OpenRouter API key found. Set OPENROUTER_API_KEY in .env")
+                return False
+        elif provider == "openai":
+            if not self.llm.openai_api_key:
+                print("ERROR: No OpenAI API key found. Set OPENAI_API_KEY in .env")
+                return False
+        elif provider == "anthropic":
+            if not self.llm.anthropic_api_key:
+                print("ERROR: No Anthropic API key found. Set ANTHROPIC_API_KEY in .env")
+                return False
+        else:
+            # Accept any configured key if provider string is custom
+            if not (
+                self.llm.openrouter_api_key
+                or self.llm.openai_api_key
+                or self.llm.anthropic_api_key
+            ):
+                print(
+                    "ERROR: No LLM API keys found. "
+                    "Set OPENROUTER_API_KEY (recommended) in .env"
+                )
+                return False
         
         # Check that log directory exists
         log_dir = os.path.dirname(self.logging.log_file)
@@ -125,6 +159,8 @@ class Config:
         return {
             "llm": {
                 "default_provider": self.llm.default_provider,
+                "model_name": self.llm.model_name,
+                "openrouter_base_url": self.llm.openrouter_base_url,
                 "max_tokens": self.llm.max_tokens,
                 "temperature": self.llm.temperature
             },
