@@ -85,7 +85,7 @@ def main():
     st.markdown("""
     <div style="text-align: center; margin-bottom: 2rem;">
         <p style="font-size: 1.2rem; color: #666;">
-            Upload your dataset and let our AI agent automatically train the best machine learning model for you!
+            Stimulate our AI agent to automatically train the best machine learning model for the macro firm panel! (Supports Custom Datasets soon!)
         </p>
     </div>
     """, unsafe_allow_html=True)
