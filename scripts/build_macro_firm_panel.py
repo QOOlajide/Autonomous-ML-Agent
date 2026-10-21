@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT / "src"))
 load_dotenv(ROOT / ".env")
 
 from ingest.edgar_client import DEFAULT_TICKER_CIKS, FUNDAMENTAL_CONCEPTS, EdgarClient
-from ingest.fred_client import DEFAULT_FRED_SERIES, FredClient
+from ingest.fred_client import PIPELINE_FEATURES, FredClient
 from ingest.panel_builder import MacroFirmPanelBuilder
 from ingest.universe import load_sp500_ticker_ciks, normalize_ticker
 
@@ -105,11 +105,19 @@ def main() -> int:
 
     logger.info("Universe size for this run: %s tickers", len(ticker_ciks))
 
-    logger.info("Fetching FRED series: %s", list(DEFAULT_FRED_SERIES.values()))
+    logger.info("Fetching FRED series: %s", list(PIPELINE_FEATURES.values()))
     fred = FredClient()
-    macro = fred.fetch_many(DEFAULT_FRED_SERIES, observation_start=args.start)
+    # Cadence print → fetch → QE align → YoY / YoY-diff transforms
+    macro = fred.fetch_many(
+        PIPELINE_FEATURES,
+        observation_start=args.start,
+        describe_cadence=True,
+        align_quarterly=True,
+        add_stationarity_transforms=True,
+    )
     fred_path = raw_dir / "fred_macros.csv"
     fred.save(macro, str(fred_path))
+    fred.save_cadence_report(str(raw_dir / "fred_series_cadence.json"))
 
     logger.info(
         "Fetching EDGAR fundamentals %s for %s tickers",

@@ -90,59 +90,39 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    # Create sidebar for configuration
-    with st.sidebar:
-        st.header("⚙️ Configuration")
-        
-        # Dataset upload section
-        st.subheader("📁 Dataset Upload")
-        uploaded_file = st.file_uploader(
-            "Choose a CSV file",
-            type=['csv'],
-            help="Upload your tabular dataset in CSV format"
-        )
-        
-        # Configuration options
-        st.subheader("🎯 Target Configuration")
-        target_column = st.text_input(
-            "Target Column Name",
-            value="target",
-            help="Name of the column you want to predict"
-        )
-        
-        # Model configuration
-        st.subheader("🧠 Model Settings")
-        max_models = st.slider(
-            "Maximum Models to Train",
-            min_value=3,
-            max_value=20,
-            value=10,
-            help="More models = better results but longer training time"
-        )
-        
-        target_metric = st.selectbox(
-            "Optimization Metric",
-            options=["accuracy", "precision", "recall", "f1", "auc"],
-            index=0,
-            help="Which metric should we optimize for?"
-        )
-        
-        compute_budget = st.slider(
-            "Compute Budget (seconds)",
-            min_value=300,
-            max_value=7200,
-            value=1800,
-            step=300,
-            help="Maximum time to spend on training"
-        )
+    _, mid, _ = st.columns([1, 1, 1])
+    with mid:
+        clicked = st.button("Run agent", width='stretch')
+    if clicked:
+        st.session_state["run_agent"] = True
+    if st.session_state.get("run_agent"):
+        left, right = st.columns(2)
+        with left:
+            st.subheader("Agent steps")
+            # Placeholder timeline (type="step"). Later: fill from agent history / graph viz.
+            with st.status("Load panel", expanded=False, state="complete", type="step"):
+                st.caption("Read data/processed/macro_firm_panel.csv into session")
+            with st.status("Inspect / profile", expanded=False, state="complete", type="step"):
+                st.caption("Missingness + column profile")
+            with st.status("Data quality decisions", expanded=False, state="complete", type="step"):
+                st.caption("Impute / drop with reasons")
+            with st.status("Run bake-off", expanded=False, state="complete", type="step"):
+                st.caption("firm_only vs firm_plus_macro")
+            with st.status("Compare macro lift", expanded=False, state="complete", type="step"):
+                st.caption("Verdict + metrics")
+            with st.status("Export / stop", expanded=False, state="complete", type="step"):
+                st.caption("Persist best model + stop")
+        with right:
+            st.subheader("Insights")
+            st.info("Synced to the active step — charts/tables go here next")
     
     # Main content area
-    if uploaded_file is not None:
-        # Process the uploaded file
-        process_dataset_ui(uploaded_file, target_column, max_models, target_metric, compute_budget)
+    panel_path = Path(__file__).parent / "data" / "processed" / "macro_firm_panel.csv"
+
+    if panel_path.exists():
+        show_data_overview(panel_path, "revenue_growth")  # stop requiring uploaded_file
     else:
-        # Show welcome screen with example
-        show_welcome_screen()
+        st.error("Panel missing. Let's try a sample dataset instead.")
 
 def show_welcome_screen():
     """
@@ -182,10 +162,10 @@ def show_welcome_screen():
         """)
         
         # Create sample data download buttons
-        if st.button("📊 Download Sample Classification Dataset", use_container_width=True):
+        if st.button("📊 Download Sample Classification Dataset", width='stretch'):
             create_sample_classification_data()
         
-        if st.button("📈 Download Sample Regression Dataset", use_container_width=True):
+        if st.button("📈 Download Sample Regression Dataset", width='stretch'):
             create_sample_regression_data()
         
         st.markdown("""
@@ -306,83 +286,66 @@ def show_data_overview(uploaded_file, target_column):
     This function shows basic statistics, data types, and sample rows
     to help users understand their data before processing.
     """
+    panel = Path(__file__).parent / "data" / "processed" / "macro_firm_panel.csv"
+    if not panel.exists():
+        st.error(f"❌ File not found: {panel}")
+        return
+    else:
+        st.session_state.df = pd.read_csv(panel)
     st.header("📊 Dataset Overview")
     
-    try:
-        # Load the data
-        df = pd.read_csv(uploaded_file)
+    df = st.session_state.df
+    st.dataframe(df, width="stretch")
+
+    # Data types and missing values
+    st.subheader("🔍 Data Types & Missing Values")
+    
+    # Create a summary DataFrame
+    summary_df = pd.DataFrame({
+        'Column': df.columns,
+        'Data Type': df.dtypes.astype(str),
+        'Missing Count': df.isnull().sum(),
+        'Missing %': (df.isnull().sum() / len(df) * 100).round(2),
+        'Unique Values': df.nunique(),
+        'Sample Value': df.iloc[0].astype(str)
+    })
+    
+    st.dataframe(summary_df, use_container_width=True)
+    
+    # Target column analysis
+    if target_column in df.columns:
+        st.subheader(f"🎯 Target Column Analysis: '{target_column}'")
         
-        # Basic information
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2 = st.columns(2)
         
         with col1:
-            st.metric("📏 Rows", f"{len(df):,}")
+            # Value counts
+            value_counts = df[target_column].value_counts()
+            fig = px.bar(
+                x=value_counts.index,
+                y=value_counts.values,
+                title=f"Distribution of '{target_column}'",
+                labels={'x': target_column, 'y': 'Count'}
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        
         with col2:
-            st.metric("📋 Columns", f"{len(df.columns):,}")
-        with col3:
-            st.metric("💾 Memory Usage", f"{df.memory_usage(deep=True).sum() / 1024**2:.1f} MB")
-        with col4:
-            missing_pct = (df.isnull().sum().sum() / (len(df) * len(df.columns))) * 100
-            st.metric("❓ Missing Values", f"{missing_pct:.1f}%")
-        
-        # Data types and missing values
-        st.subheader("🔍 Data Types & Missing Values")
-        
-        # Create a summary DataFrame
-        summary_df = pd.DataFrame({
-            'Column': df.columns,
-            'Data Type': df.dtypes.astype(str),
-            'Missing Count': df.isnull().sum(),
-            'Missing %': (df.isnull().sum() / len(df) * 100).round(2),
-            'Unique Values': df.nunique(),
-            'Sample Value': df.iloc[0].astype(str)
-        })
-        
-        st.dataframe(summary_df, use_container_width=True)
-        
-        # Target column analysis
-        if target_column in df.columns:
-            st.subheader(f"🎯 Target Column Analysis: '{target_column}'")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Value counts
-                value_counts = df[target_column].value_counts()
-                fig = px.bar(
-                    x=value_counts.index,
-                    y=value_counts.values,
-                    title=f"Distribution of '{target_column}'",
-                    labels={'x': target_column, 'y': 'Count'}
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            
-            with col2:
-                # Statistics
-                if pd.api.types.is_numeric_dtype(df[target_column]):
-                    st.metric("Mean", f"{df[target_column].mean():.2f}")
-                    st.metric("Std Dev", f"{df[target_column].std():.2f}")
-                    st.metric("Min", f"{df[target_column].min():.2f}")
-                    st.metric("Max", f"{df[target_column].max():.2f}")
-                else:
-                    st.metric("Unique Values", df[target_column].nunique())
-                    st.metric("Most Common", value_counts.index[0])
-                    st.metric("Most Common Count", value_counts.iloc[0])
-        
-        # Sample data
-        st.subheader("👀 Sample Data (First 10 Rows)")
-        st.dataframe(df.head(10), use_container_width=True)
-        
-    except Exception as e:
-        st.error(f"❌ Error loading dataset: {str(e)}")
-        st.markdown("""
-        <div class="error-box">
-            <strong>Common Issues:</strong><br>
-            • Make sure your file is a valid CSV<br>
-            • Check that the target column name is correct<br>
-            • Ensure the file isn't corrupted
-        </div>
-        """, unsafe_allow_html=True)
+            # Statistics
+            if pd.api.types.is_numeric_dtype(df[target_column]):
+                st.metric("Mean", f"{df[target_column].mean():.2f}")
+                st.metric("Std Dev", f"{df[target_column].std():.2f}")
+                st.metric("Min", f"{df[target_column].min():.2f}")
+                st.metric("Max", f"{df[target_column].max():.2f}")
+            else:
+                st.metric("Unique Values", df[target_column].nunique())
+                st.metric("Most Common", value_counts.index[0])
+                st.metric("Most Common Count", value_counts.iloc[0])
+    
+    # Sample data
+    st.subheader("👀 Sample Data (First 10 Rows)")
+    st.dataframe(df.head(10), use_container_width=True)
+    
+    
 
 def show_processing_pipeline(uploaded_file, target_column):
     """

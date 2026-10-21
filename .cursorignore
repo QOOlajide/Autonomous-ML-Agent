@@ -1,0 +1,75 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.venv/
+venv/
+ENV/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.cache/
+*.cover
+.hypothesis/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ML artifacts & runtime outputs
+artifacts/
+logs/
+/models/
+*.pkl
+*.pickle
+*.joblib
+*.h5
+*.pt
+*.pth
+*.onnx
+mlruns/
+wandb/
+temp_*.csv
+
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local / deploy noise
+*.log
+.python-version

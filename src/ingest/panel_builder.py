@@ -26,14 +26,26 @@ RAW_FIRM_LEVEL_COLS = [
     "eps_diluted",
 ]
 
-BASE_MACROS = {
-    "gdp",
-    "unemployment",
-    "cpi",
-    "fed_funds",
-    "treasury_10y",
-    "ind_prod",
+# Stationary macro features produced by FredClient (QE-aligned YoY transforms)
+MACRO_MODEL_FEATURES = {
+    "real_gdp_yoy",
+    "industrial_prod_yoy",
+    "real_pce_yoy",
+    "cpi_yoy",
+    "ppi_yoy",
+    "employment_cost_yoy",
+    "wti_oil_yoy",
+    "fed_funds_diff_yoy",
+    "treasury_10y_diff_yoy",
+    "yield_curve_10_2_diff_yoy",
+    "high_yield_spread_diff_yoy",
+    "unemployment_diff_yoy",
+    # consumer_sentiment kept as level (already survey index); include if present
+    "consumer_sentiment",
 }
+
+# Legacy alias
+BASE_MACROS = MACRO_MODEL_FEATURES
 
 
 class MacroFirmPanelBuilder:
@@ -120,32 +132,19 @@ class MacroFirmPanelBuilder:
 
         firm = firm.sort_values("period_start")
         macro_levels = macro[["observation_date"] + value_cols].sort_values("observation_date")
-        # FRED series print on different calendars; ffill so as-of rows carry last known level
-        macro_levels[value_cols] = macro_levels[value_cols].ffill()
+        # Prefer model features (YoY / diffs); fall back to whatever columns exist
+        prefer = [c for c in value_cols if c in MACRO_MODEL_FEATURES or c.endswith("_yoy") or c.endswith("_diff_yoy")]
+        attach_cols = prefer if prefer else value_cols
+        macro_levels[attach_cols] = macro_levels[attach_cols].ffill()
         merged = pd.merge_asof(
             firm,
-            macro_levels,
+            macro_levels[["observation_date"] + attach_cols],
             left_on="period_start",
             right_on="observation_date",
             direction="backward",
         )
         if "observation_date" in merged.columns:
             merged = merged.rename(columns={"observation_date": "macro_asof_date"})
-
-        hist = macro_levels.copy()
-        for col in value_cols:
-            hist[f"{col}_chg"] = hist[col].pct_change()
-        chg_cols = [f"{c}_chg" for c in value_cols]
-        hist[chg_cols] = hist[chg_cols].replace([float("inf"), float("-inf")], pd.NA)
-        merged = pd.merge_asof(
-            merged.sort_values("period_start"),
-            hist[["observation_date"] + chg_cols].sort_values("observation_date"),
-            left_on="period_start",
-            right_on="observation_date",
-            direction="backward",
-        )
-        if "observation_date" in merged.columns:
-            merged = merged.drop(columns=["observation_date"])
 
         return merged.sort_values(["ticker", "period_end"]).reset_index(drop=True)
 
@@ -167,11 +166,11 @@ class MacroFirmPanelBuilder:
         return [c for c in preferred if c in panel.columns]
 
     def _macro_feature_columns(self, panel: pd.DataFrame) -> List[str]:
-        return [
-            c
-            for c in panel.columns
-            if c in BASE_MACROS or (c.endswith("_chg") and c[: -len("_chg")] in BASE_MACROS)
-        ]
+        preferred = [c for c in MACRO_MODEL_FEATURES if c in panel.columns]
+        if preferred:
+            return preferred
+        # Fallback for older panels that used *_chg naming
+        return [c for c in panel.columns if c.endswith("_yoy") or c.endswith("_diff_yoy") or c.endswith("_chg")]
 
     def build(
         self,

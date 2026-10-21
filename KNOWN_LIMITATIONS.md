@@ -40,7 +40,15 @@ We persist traces and metrics to disk. There is no drift dashboard, alerting, or
 ### 8. Streamlit UI
 The public Streamlit app still reflects the older generic CSV flow; it is **not** yet wired to the one-button agent + bake-off demo described in planning notes.
 
+## FRED macros (current design)
+- Cadence via `fredapi.Fred.get_series_info` → print `info['frequency']` (mixed D/M/Q expected).
+- Ingest uses a **transmission-mapped** feature set (`PIPELINE_FEATURES` in `fred_client.py`).
+- Mixed frequencies are **resampled to quarter-end (`QE`).last().ffill()** before modeling features.
+- Stationarity: level indices → `*_yoy` (`pct_change(4)`); rates/spreads → `*_diff_yoy` (4Q difference).
+- Firm panel still attaches with as-of on `period_start`.
+
 ## What we do claim
 - Deterministic tools for ingest → quality profile/decisions → firm_only vs firm_plus_macro bake-off.
 - Leakage-aware **macro as-of join** and mostly **lagged** firm features in panel construction (see `src/ingest/panel_builder.py`).
 - Explicit allowlisted agent tools and persisted run history for auditability.
+- Macro cadences come from FRED via `fredapi` + env `FRED_API_KEY` (not hardcoded).
