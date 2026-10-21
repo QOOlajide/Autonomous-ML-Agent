@@ -50,7 +50,8 @@ artifacts/
 logs/
 /models/
 data/raw/
-data/processed/
+data/processed/*
+!data/processed/macro_firm_panel.csv
 *.pkl
 *.pickle
 *.joblib
