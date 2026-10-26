@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from .openrouter_client import OpenRouterClient
 from .tools import TOOL_SPECS, AgentState, get_tool_registry
@@ -97,9 +97,13 @@ class LLMOrchestrator:
             "firm_plus_macro bake-off, compare whether macro helps, export, stop."
         ),
         max_steps: int = 10,
+        on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> AgentState:
         """
         LLM-first loop: decide tool → execute → feed result back → repeat.
+
+        on_step: optional callback after each tool, receives the history entry
+        {step, call, result}. Used by Streamlit to show proof per tool call.
         """
         self.state = AgentState()
         messages: List[Dict[str, str]] = [
@@ -122,7 +126,13 @@ class LLMOrchestrator:
             logger.info("Tool=%s reason=%s args=%s", tool, reason, args)
 
             result = self.run_tool(str(tool), args if isinstance(args, dict) else {})
-            self.state.history.append({"step": step, "call": call, "result": result})
+            entry = {"step": step, "call": call, "result": result}
+            self.state.history.append(entry)
+            if on_step is not None:
+                try:
+                    on_step(entry)
+                except Exception as cb_exc:
+                    logger.warning("on_step callback failed: %s", cb_exc)
 
             messages.append({"role": "assistant", "content": json.dumps(call)})
             messages.append(

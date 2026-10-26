@@ -18,17 +18,188 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import os
 import sys
 from pathlib import Path
 import time
 import json
 from io import BytesIO
 
+from dotenv import load_dotenv
+
 # Add src to path so we can import our modules
-sys.path.append(str(Path(__file__).parent / "src"))
+ROOT = Path(__file__).parent
+sys.path.append(str(ROOT / "src"))
+try:
+    load_dotenv(ROOT / ".env")
+except OSError:
+    pass
 
 from data.pipeline import DataPipeline
 from config import config
+from orchestration.llm_orchestrator import LLMOrchestrator
+from orchestration.tools import AgentState
+
+TOOL_LABELS = {
+    "load_panel": "Load panel",
+    "inspect_panel": "Inspect panel",
+    "profile_missingness": "Profile missingness",
+    "apply_data_quality_decisions": "Data quality decisions",
+    "run_bakeoff": "Bake-off",
+    "compare_macro_lift": "Compare macro lift",
+    "export_best_model": "Export best model",
+    "stop": "Stop",
+}
+
+DEFAULT_AGENT_GOAL = (
+    "Load the macro-firm panel, profile missingness, apply per-column data-quality "
+    "decisions with reasons (impute or drop as appropriate for EDGAR/macro gaps), "
+    "then run firm_only vs firm_plus_macro bake-off with rmse, compare macro lift, "
+    "export best model, stop."
+)
+
+
+def _tool_name(entry: dict) -> str:
+    return str((entry.get("call") or {}).get("tool") or "unknown")
+
+
+def _proof_ok(tool: str, result: dict) -> bool:
+    if not isinstance(result, dict) or not result.get("ok"):
+        return False
+    if tool == "load_panel":
+        return bool(result.get("preview") or result.get("panel_path"))
+    if tool == "profile_missingness":
+        return "n_with_missing" in result or "missing_columns" in result
+    if tool == "apply_data_quality_decisions":
+        return "applied" in result or "skipped" in result
+    if tool == "run_bakeoff":
+        return bool(result.get("leaderboard_top") or result.get("summary"))
+    if tool == "compare_macro_lift":
+        return bool(result.get("summary"))
+    if tool == "export_best_model":
+        return bool(result.get("output_dir") or result.get("best_model"))
+    if tool == "stop":
+        return bool(result.get("stopped"))
+    if tool == "inspect_panel":
+        return "rows" in result or "columns" in result
+    return True
+
+
+def _status_state(tool: str, result: dict) -> str:
+    if isinstance(result, dict) and result.get("ok") is False:
+        return "error"
+    if _proof_ok(tool, result or {}):
+        return "complete"
+    return "running"
+
+
+def render_insight_for_entry(entry: dict) -> None:
+    tool = _tool_name(entry)
+    result = entry.get("result") or {}
+    reason = (entry.get("call") or {}).get("reason", "")
+    if reason:
+        st.caption(f"Reason: {reason}")
+    if not isinstance(result, dict):
+        st.write(result)
+        return
+    if result.get("ok") is False:
+        st.error(result.get("error", "Tool failed"))
+        return
+    if tool == "load_panel":
+        st.write(
+            f"Loaded `{result.get('panel_path')}` — "
+            f"{result.get('rows')} rows × {result.get('cols')} cols"
+        )
+        preview = result.get("preview")
+        if preview:
+            st.dataframe(pd.DataFrame(preview), width="stretch")
+        elif result.get("panel_path"):
+            path = Path(result["panel_path"])
+            if path.exists():
+                st.dataframe(pd.read_csv(path).head(5), width="stretch")
+        return
+    if tool == "profile_missingness":
+        st.json(
+            {
+                "n_with_missing": result.get("n_with_missing"),
+                "high_missing_columns": result.get("high_missing_columns"),
+            }
+        )
+        return
+    if tool == "apply_data_quality_decisions":
+        applied = result.get("applied") or []
+        if applied:
+            st.dataframe(pd.DataFrame(applied), width="stretch")
+        else:
+            st.json(
+                {
+                    "skipped": result.get("skipped"),
+                    "dropped_features": result.get("dropped_features"),
+                }
+            )
+        return
+    if tool == "run_bakeoff":
+        top = result.get("leaderboard_top")
+        if top:
+            st.dataframe(pd.DataFrame(top), width="stretch")
+        if result.get("summary"):
+            st.json(result["summary"])
+        return
+    st.json(result)
+
+
+def render_agent_panel() -> None:
+    history = st.session_state.get("agent_history") or []
+    error = st.session_state.get("agent_error")
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Agent steps")
+        if error:
+            st.error(error)
+        for entry in history:
+            tool = _tool_name(entry)
+            result = entry.get("result") or {}
+            with st.status(
+                TOOL_LABELS.get(tool, tool),
+                expanded=False,
+                state=_status_state(tool, result),
+                type="step",
+            ):
+                st.caption(f"step {entry.get('step')}")
+    with right:
+        st.subheader("Insights")
+        if history:
+            latest = history[-1]
+            st.markdown(f"**{TOOL_LABELS.get(_tool_name(latest), _tool_name(latest))}**")
+            render_insight_for_entry(latest)
+        else:
+            st.info("Click Run agent to start.")
+
+
+def run_case_study_agent(max_steps: int = 10, on_step=None):
+    # Tests set AML_AGENT_STUB=1 to skip OpenRouter (optional sleep for delay).
+    if os.environ.get("AML_AGENT_STUB") == "1":
+        n = int(os.environ.get("AML_AGENT_STUB_CALLS", "0")) + 1
+        os.environ["AML_AGENT_STUB_CALLS"] = str(n)
+        delay = float(os.environ.get("AML_AGENT_STUB_SLEEP", "0.1"))
+        time.sleep(delay)
+        return AgentState()
+
+    panel = ROOT / "data" / "processed" / "macro_firm_panel.csv"
+    if not panel.exists():
+        raise FileNotFoundError(
+            f"Missing {panel}. Run: python scripts/build_macro_firm_panel.py"
+        )
+    orch = LLMOrchestrator()
+    state = orch.run_agent_loop(
+        goal=DEFAULT_AGENT_GOAL,
+        max_steps=max_steps,
+        on_step=on_step,
+    )
+    history_path = ROOT / "artifacts" / "macro_bakeoff" / "agent_history.json"
+    history_path.parent.mkdir(parents=True, exist_ok=True)
+    history_path.write_text(json.dumps(state.history, indent=2, default=str))
+    return state
 
 # Configure Streamlit page
 st.set_page_config(
@@ -90,34 +261,88 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
+    if "button_label" not in st.session_state:
+        st.session_state["button_label"] = "Run agent"
+
+    def handle_run_click():
+        # Start work only — label flips to "Run again" after the run finishes.
+        # Disable immediately (idempotency): on_click runs before the button redraws.
+        st.session_state["pending_agent_run"] = True
+        st.session_state["agent_running"] = True
+
     _, mid, _ = st.columns([1, 1, 1])
     with mid:
-        clicked = st.button("Run agent", width='stretch')
-    if clicked:
+        st.button(
+            label=st.session_state["button_label"],
+            on_click=handle_run_click,
+            width="stretch",
+            disabled=st.session_state.get("agent_running", False),
+            key="run_agent_btn",
+        )
+
+    # Orchestrator runs ONLY when pending (set by on_click on the click rerun)
+    if st.session_state.pop("pending_agent_run", False):
         st.session_state["run_agent"] = True
-    if st.session_state.get("run_agent"):
-        left, right = st.columns(2)
-        with left:
-            st.subheader("Agent steps")
-            # Placeholder timeline (type="step"). Later: fill from agent history / graph viz.
-            with st.status("Load panel", expanded=False, state="complete", type="step"):
-                st.caption("Read data/processed/macro_firm_panel.csv into session")
-            with st.status("Inspect / profile", expanded=False, state="complete", type="step"):
-                st.caption("Missingness + column profile")
-            with st.status("Data quality decisions", expanded=False, state="complete", type="step"):
-                st.caption("Impute / drop with reasons")
-            with st.status("Run bake-off", expanded=False, state="complete", type="step"):
-                st.caption("firm_only vs firm_plus_macro")
-            with st.status("Compare macro lift", expanded=False, state="complete", type="step"):
-                st.caption("Verdict + metrics")
-            with st.status("Export / stop", expanded=False, state="complete", type="step"):
-                st.caption("Persist best model + stop")
-        with right:
-            st.subheader("Insights")
-            st.info("Synced to the active step — charts/tables go here next")
-    
+        # Cache hit: replay session payload — no second OpenRouter / agent call.
+        if st.session_state.get("agent_run_cached"):
+            st.session_state["agent_running"] = False
+            render_agent_panel()
+        else:
+            st.session_state["agent_error"] = None
+            st.session_state["agent_history"] = []
+            st.session_state["agent_summary"] = None
+            st.session_state["agent_run_cached"] = False
+
+            live_left, live_right = st.columns(2)
+            with live_left:
+                st.subheader("Agent steps")
+                steps_box = st.empty()
+            with live_right:
+                st.subheader("Insights")
+                insight_box = st.empty()
+
+            def on_step(entry: dict) -> None:
+                hist = list(st.session_state.get("agent_history") or []) + [entry]
+                st.session_state["agent_history"] = hist
+                with steps_box.container():
+                    for e in hist:
+                        tool = _tool_name(e)
+                        result = e.get("result") or {}
+                        with st.status(
+                            TOOL_LABELS.get(tool, tool),
+                            expanded=False,
+                            state=_status_state(tool, result),
+                            type="step",
+                        ):
+                            st.caption(f"step {e.get('step')}")
+                with insight_box.container():
+                    st.markdown(
+                        f"**{TOOL_LABELS.get(_tool_name(entry), _tool_name(entry))}**"
+                    )
+                    render_insight_for_entry(entry)
+
+            try:
+                with st.spinner("Running agent (OpenRouter + bake-off)..."):
+                    state = run_case_study_agent(on_step=on_step)
+                st.session_state["agent_history"] = state.history
+                st.session_state["agent_summary"] = state.summary
+                st.session_state["agent_export_dir"] = state.export_dir
+                st.session_state["agent_run_cached"] = True
+            except Exception as exc:
+                st.session_state["agent_error"] = str(exc)
+                st.session_state["agent_history"] = []
+                st.session_state["agent_summary"] = None
+                st.session_state["agent_run_cached"] = False
+            finally:
+                st.session_state["agent_running"] = False
+                st.session_state["button_label"] = "Run again"
+            st.rerun()
+
+    elif st.session_state.get("run_agent"):
+        render_agent_panel()
+
     # Main content area
-    panel_path = Path(__file__).parent / "data" / "processed" / "macro_firm_panel.csv"
+    panel_path = ROOT / "data" / "processed" / "macro_firm_panel.csv"
 
     if panel_path.exists():
         show_data_overview(panel_path, "revenue_growth")  # stop requiring uploaded_file

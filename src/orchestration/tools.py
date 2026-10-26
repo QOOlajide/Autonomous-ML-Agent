@@ -62,6 +62,12 @@ def load_panel(
     state.feature_sets = json.loads(fs_file.read_text())
     state.quality_profile = None
     state.quality_decisions = []
+    preview_df = state.panel.head(5)
+    preview = (
+        preview_df.astype(object)
+        .where(pd.notnull(preview_df), None)
+        .to_dict(orient="records")
+    )
     return {
         "ok": True,
         "rows": int(state.panel.shape[0]),
@@ -73,6 +79,7 @@ def load_panel(
         "firm_only": state.feature_sets.get("firm_only", []),
         "firm_plus_macro": state.feature_sets.get("firm_plus_macro", []),
         "panel_path": str(panel_file),
+        "preview": preview,
     }
 
 
