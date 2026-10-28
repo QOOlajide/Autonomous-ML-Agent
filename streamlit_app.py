@@ -148,6 +148,27 @@ def render_insight_for_entry(entry: dict) -> None:
     st.json(result)
 
 
+def _paint_steps_and_insight(history: list, steps_box, insight_box) -> None:
+    """Redraw left statuses + right insight for the given history prefix."""
+    with steps_box.container():
+        for e in history:
+            tool = _tool_name(e)
+            result = e.get("result") or {}
+            with st.status(
+                TOOL_LABELS.get(tool, tool),
+                expanded=False,
+                state=_status_state(tool, result),
+                type="step",
+            ):
+                st.caption(f"step {e.get('step')}")
+    if not history:
+        return
+    latest = history[-1]
+    with insight_box.container():
+        st.markdown(f"**{TOOL_LABELS.get(_tool_name(latest), _tool_name(latest))}**")
+        render_insight_for_entry(latest)
+
+
 def render_agent_panel() -> None:
     history = st.session_state.get("agent_history") or []
     error = st.session_state.get("agent_error")
@@ -183,7 +204,31 @@ def run_case_study_agent(max_steps: int = 10, on_step=None):
         os.environ["AML_AGENT_STUB_CALLS"] = str(n)
         delay = float(os.environ.get("AML_AGENT_STUB_SLEEP", "0.1"))
         time.sleep(delay)
-        return AgentState()
+        state = AgentState()
+        # Stable fake history so AppTest can assert cache replay (not a second fetch).
+        state.history = [
+            {
+                "step": 1,
+                "call": {
+                    "tool": "load_panel",
+                    "args": {},
+                    "reason": "stub",
+                },
+                "result": {
+                    "ok": True,
+                    "panel_path": "data/processed/macro_firm_panel.csv",
+                    "preview": [{"ticker": "A", "rows": 1}],
+                    "rows": 1,
+                    "cols": 1,
+                },
+            },
+            {
+                "step": 2,
+                "call": {"tool": "stop", "args": {}, "reason": "stub done"},
+                "result": {"ok": True, "stopped": True},
+            },
+        ]
+        return state
 
     panel = ROOT / "data" / "processed" / "macro_firm_panel.csv"
     if not panel.exists():
@@ -283,10 +328,13 @@ def main():
     # Orchestrator runs ONLY when pending (set by on_click on the click rerun)
     if st.session_state.pop("pending_agent_run", False):
         st.session_state["run_agent"] = True
-        # Cache hit: replay session payload — no second OpenRouter / agent call.
+        # Cache hit: reuse session history only — do NOT paint UI then sleep.
+        # Mid-run sleeps leave st.status widgets grey ("stale") until a clean rerun.
+        # Data stays in session_state; UI is drawn fresh on the next pass below.
         if st.session_state.get("agent_run_cached"):
             st.session_state["agent_running"] = False
-            render_agent_panel()
+            st.session_state["button_label"] = "Run again"
+            st.rerun()
         else:
             st.session_state["agent_error"] = None
             st.session_state["agent_history"] = []
@@ -304,22 +352,7 @@ def main():
             def on_step(entry: dict) -> None:
                 hist = list(st.session_state.get("agent_history") or []) + [entry]
                 st.session_state["agent_history"] = hist
-                with steps_box.container():
-                    for e in hist:
-                        tool = _tool_name(e)
-                        result = e.get("result") or {}
-                        with st.status(
-                            TOOL_LABELS.get(tool, tool),
-                            expanded=False,
-                            state=_status_state(tool, result),
-                            type="step",
-                        ):
-                            st.caption(f"step {e.get('step')}")
-                with insight_box.container():
-                    st.markdown(
-                        f"**{TOOL_LABELS.get(_tool_name(entry), _tool_name(entry))}**"
-                    )
-                    render_insight_for_entry(entry)
+                _paint_steps_and_insight(hist, steps_box, insight_box)
 
             try:
                 with st.spinner("Running agent (OpenRouter + bake-off)..."):

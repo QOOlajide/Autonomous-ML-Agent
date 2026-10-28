@@ -18,7 +18,6 @@ from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import train_test_split
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.neural_network import MLPRegressor
 from sklearn.pipeline import Pipeline
@@ -47,6 +46,9 @@ class TrainedModel:
 class ModelTrainer:
     """Train curated regressors; compare firm_only vs firm_plus_macro."""
 
+    # Holdout: train on period_end before this date; test on or after.
+    DEFAULT_TEST_START = "2024-01-01"
+
     def __init__(
         self,
         max_models: Optional[int] = None,
@@ -56,6 +58,7 @@ class ModelTrainer:
         self.max_models = max_models or config.model.max_models_to_train
         self.compute_budget = compute_budget or config.model.max_compute_budget
         self.random_state = random_state
+        self.test_start = pd.Timestamp(self.DEFAULT_TEST_START)
         self.results: List[TrainedModel] = []
 
     def _model_zoo(self) -> Dict[str, Any]:
@@ -136,11 +139,12 @@ class ModelTrainer:
         panel: pd.DataFrame,
         feature_sets: Dict[str, Any],
         target_col: str = "target",
-        test_size: float = 0.2,
         primary_metric: str = "rmse",
     ) -> List[TrainedModel]:
         if target_col not in panel.columns:
             raise ValueError(f"Missing target column: {target_col}")
+        if "period_end" not in panel.columns:
+            raise ValueError("Missing period_end column for time-based split")
 
         sets_to_run = {
             "firm_only": list(feature_sets.get("firm_only") or []),
@@ -153,16 +157,33 @@ class ModelTrainer:
             if not cols:
                 raise ValueError(f"Feature set {label} is empty")
 
+        cut = self.test_start
+        dates = pd.to_datetime(panel["period_end"])
+        train_mask = dates < cut
+        test_mask = dates >= cut
+        if not train_mask.any():
+            raise ValueError(f"No train rows with period_end < {cut.date()}")
+        if not test_mask.any():
+            raise ValueError(f"No test rows with period_end >= {cut.date()}")
+
         y = panel[target_col]
+        y_train = y.loc[train_mask]
+        y_test = y.loc[test_mask]
+        logger.info(
+            "Time split period_end | cut=%s | train=%s test=%s",
+            cut.date(),
+            int(train_mask.sum()),
+            int(test_mask.sum()),
+        )
+
         start = time.time()
         model_names = list(self._model_zoo().keys())[: max(1, self.max_models)]
         results: List[TrainedModel] = []
 
         for feature_set, cols in sets_to_run.items():
             X = panel[cols]
-            X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=test_size, random_state=self.random_state
-            )
+            X_train = X.loc[train_mask]
+            X_test = X.loc[test_mask]
             logger.info(
                 "Feature set=%s | features=%s | train=%s test=%s",
                 feature_set,
